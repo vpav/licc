@@ -24,6 +24,7 @@ import shutil
 from tqdm import tqdm
 import functools
 import tarfile
+import argparse
 
 
 #
@@ -532,6 +533,9 @@ class CVEManager():
     CHECK_CVE_NOT_APPLICABLE = 1
     CHECK_INCONCLUSIVE = 2
 
+    EXPORT_CSV = 0
+    EXPORT_XLSX = 1
+
     def __init__(self):
         self.kernel_version = ""
         self.remote_url = ""
@@ -605,67 +609,36 @@ class CVEManager():
 
    
     def collectCPE(self, iter):
-        #if type(iter) is dict:
-            if "children" in iter:
-                
-                if iter.children:
-                    # Children contains elements
-                    a = []
-                    for child in iter.children:
-                        self.collectCPE(child)
-                    
-                else:
-                    # Children contains NO elements
-                    #print("CPE: ", iter.cpe_match)
-                    self.cpes.append(iter.cpe_match)
-                    
-        #else:
-        #    print("not a dict, but a ", type(iter))
+        if "children" in iter:
+            
+            if iter.children:
+                # Children contains elements
+                a = []
+                for child in iter.children:
+                    self.collectCPE(child)   
+            else:
+                # Children contains NO elements
+                self.cpes.append(iter.cpe_match)
+
 
     def update_cves(self):
         """Update local CVEs DB from NIST DB"""
 
-        # user does NOT have api key
-        # limit = 10 req / 60s
-
-        # user has api key
-        #
-        # limit = 100 req / 60s
+        # user does NOT have api key: limit = 10 req / 60s
+        # user has api key:  limit = 100 req / 60s
         r = nvdlib.searchCVE(cpeName = 'cpe:2.3:o:linux:linux_kernel:' + KERNEL_VERSION + ':*:*:*:*:*:*:*', key=NIST_NVD_API_KEY)
         cvelist = []
         truecvelist: list[CVE] = []
         falsepositivelist = []
         for cve in r:
             self.cpes = []
-            falsepositive = True
+            
             print("-----------------------------------------------")
             print(cve.id, end='')
             cvelist.append(cve.id)
-            #print(cve.configurations)
             config = cve.configurations.nodes
-            #print(config)
-            
-            for eachNode in config:
-                ### Part 1: Elements with Children
-                if "children" in eachNode:
-                    #print("Has Children!")
-                    self.collectCPE(eachNode)
-                    #for eachCpe in eachNode.children:
-                    #    print(eachCpe.cpe23Uri)
-                    #print("...................................")
-                for element in self.cpes:
-                    for subelement in element:
-                        if subelement.vulnerable:
-                            #print(subelement.cpe23Uri)
-                            if "linux_kernel" in subelement.cpe23Uri:
-                                falsepositive = False
-                    #print("CPE: ", element)
-                #print("...................................")
-                ### Part 2: Elements without Children
-                for eachCpe in eachNode.cpe_match:
-                    #print(eachCpe.cpe23Uri)
-                    #TODO: check for vulnerable==true as in part1
-                    pass
+
+            falsepositive = self.__false_positive(config)
 
             if falsepositive:
                 falsepositivelist.append(cve.id)
@@ -696,9 +669,40 @@ class CVEManager():
 
         return ret
 
-    def __false_positive(self):
+    def __false_positive(self, config) -> bool:
         """Check for false positive. Note: This is a oversimplified check. It only checks for non-linux-kernel cpes and ignores the CPE logic, i.e. does not parse the tree."""
-        pass
+
+        # Search the CPEs of retrieved CVE for real matches as the searchCVE() 
+        # returns all CVEs that contain the linux CPE. 
+        # CPEs are organized trees. In some cases CVEs include linux only as 
+        # the OS of an application software containing the CVE.
+        # 
+        # BUG: This matching is lazily implemented. 
+        # A real mathing would need to parse the entire tree.
+        falsepositive = True
+
+        for eachNode in config:
+            ### Part 1: Elements with Children
+            if "children" in eachNode:
+                self.collectCPE(eachNode)
+                #for eachCpe in eachNode.children:
+                #    print(eachCpe.cpe23Uri)
+                #print("...................................")
+            for element in self.cpes:
+                for subelement in element:
+                    if subelement.vulnerable:
+                        #print(subelement.cpe23Uri)
+                        if "linux_kernel" in subelement.cpe23Uri:
+                            falsepositive = False
+                #print("CPE: ", element)
+            #print("...................................")
+            ### Part 2: Elements without Children
+            for eachCpe in eachNode.cpe_match:
+                #print(eachCpe.cpe23Uri)
+                #TODO: check for vulnerable==true as in part1
+                pass
+        return falsepositive
+        
 
     def print(self):
         #
@@ -714,8 +718,13 @@ class CVEManager():
         # config reference
         pass
 
-    def export(self, format):
-        pass
+    def export(self, export_path:str, format:int):
+        if format == self.EXPORT_CSV:
+            self.export_csv(export_path)
+        elif format == self.EXPORT_XLSX:
+            self.export_xlsx(export_path)
+        else:
+            raise ValueError()
 
     def export_xlsx(self, export_path:str):
         """Export to a xslx File"""
@@ -768,7 +777,13 @@ class CVEManager():
 def setup_directories():
     """Creates Working Directories if necessary"""
     # TODO: add dir setup
-    pass
+    try:
+        if os.path.exists(KERNEL_SRC_DIR):
+            os.mkdir(KERNEL_SRC_DIR)
+    except (OSError, IOError):
+        logging.error("Error creating working directories")
+        pass
+    
 
 
 
@@ -778,6 +793,80 @@ def main():
     logging.basicConfig(format='%(levelname)s:  %(message)s', level=logging.DEBUG)
 
     colorama.init()
+
+    descr_default = """ __         __     ______     ______    
+/\ \       /\ \   /\  ___\   /\  ___\   
+\ \ \____  \ \ \  \ \ \____  \ \ \____  
+ \ \_____\  \ \_\  \ \_____\  \ \_____\ 
+  \/_____/   \/_/   \/_____/   \/_____/
+
+  licc - linux cve checker
+
+  Copyright 2022 Viktor Pavlovic
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see http://www.gnu.org/licenses/"""
+
+    descr_color = colorama.Fore.LIGHTCYAN_EX + """ __         __     ______     ______    
+/\ \       /\ \   /\  ___\   /\  ___\   
+\ \ \____  \ \ \  \ \ \____  \ \ \____  
+ \ \_____\  \ \_\  \ \_____\  \ \_____\ 
+  \/_____/   \/_/   \/_____/   \/_____/ 
+
+""" + colorama.Style.RESET_ALL + """  licc - """ + colorama.Fore.LIGHTRED_EX + "li" + colorama.Style.RESET_ALL + "nux " + colorama.Fore.LIGHTRED_EX + "c" + colorama.Style.RESET_ALL + "ve " + colorama.Fore.LIGHTRED_EX + "c" + colorama.Style.RESET_ALL + """hecker
+
+  Copyright 2022 Viktor Pavlovic
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see http://www.gnu.org/licenses/"""
+
+    parser = argparse.ArgumentParser(description=descr_color,formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('-l','--lconfig', metavar='PATH', type=pathlib.Path, help='licc config to use, defaults to ./licc.ini')
+    parser.add_argument('-c','--kconfig', metavar='PATH', type=pathlib.Path, help='kernel config path')
+    parser.add_argument('-o', '--out', metavar='PATH', type=pathlib.Path, help='report path')
+    parser.add_argument('-f', '--outformat', metavar='XLS|CSV', help='report format')
+    parser.add_argument('-k', '--ksrc', metavar='PATH', type=pathlib.Path, help='kernel source directory. Overwrites default search path & auto-download, use if you want to work with your (non-vanilla) kernel code')
+    parser.add_argument('-t', '--type')
+    parser.add_argument('-v', '--kversion', help='kernel version to check')
+
+    args = parser.parse_args()
+
+    if args.out:
+        outfile = args.out
+    else:
+        outfile = 'export.xslx'
+
+
+    if args.outformat:
+        if args.outformat == "xls":
+            outfmt = CVEManager.EXPORT_XLSX
+        elif args.outformat == "cvs":
+            outfmt = CVEManager.EXPORT_CSV
+        else:
+            logging.info("Invalid report format specified, defaulting to CSV")
+            outfmt = CVEManager.EXPORT_CSV
+    else:
+        outfmt = CVEManager.EXPORT_CSV
 
     
     config = configparser.ConfigParser()
@@ -809,8 +898,7 @@ def main():
     # Step 3: iterate over CVEs, check for applicability
     cvem.check_cves()
     # Step 4: Store Results
-    cvem.export_xlsx('export.xlsx')
-    #TODO: export path from config
+    cvem.export(outfile, outfmt)
 
 if __name__ == "__main__":
     main()
