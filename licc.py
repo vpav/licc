@@ -76,7 +76,7 @@ class SourceChecker():
         req = requests.get(kurl, stream=True, allow_redirects=True)
         if req.status_code != 200:
             req.raise_for_status()
-            raise RuntimeError(f"Request to {kurl} returned status code {r.status_code}")
+            raise RuntimeError(f"Request to {kurl} returned status code {req.status_code}")
         file_size = int(req.headers.get('Content-Length', 0))
 
         path = pathlib.Path(kpath).expanduser().resolve()
