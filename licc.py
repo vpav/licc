@@ -1,3 +1,4 @@
+from ast import Str
 from distutils.command.build_scripts import first_line_re
 from genericpath import isfile
 from inspect import currentframe
@@ -18,13 +19,20 @@ import re
 import xlsxwriter
 import colorama
 import sys
+import requests
+import shutil
+from tqdm import tqdm
+import functools
+import tarfile
+
 
 #
 # Tool Settings
 #
 KERNEL_SRC_DIR = ""
 TMP_DIR = ""
-KERNEL_SRC_BASE_URL = "https://mirrors.edge.kernel.org/pub/linux/kernel/v{major}.x/linux-{major}.{minor}.{build}.tar.gz"
+KERNEL_SRC_BASE_URL = "https://mirrors.edge.kernel.org/pub/linux/kernel/v{major}.x/linux-{major}.{minor}.{build}.tar.xz"
+KERNEL_LOCAL_FILENAME = "linux-{major}.{minor}.{build}.tar.xz"
 NIST_NVD_API_KEY = ""
 CONSOLE_COLOR = False
 
@@ -48,17 +56,48 @@ class SourceChecker():
 
     def __init__(self, kversion:str = ""):
         self.kernel_version = ""
-        self.remote_url = ""
-        self.root_path = ""    
+        self.remote_url = ""  
         subdir = "linux-" + kversion
         self.root_path = os.path.join(KERNEL_SRC_DIR, subdir)
         logging.info("Source Checker initialized for Kernel " + kversion)
 
-    def __download_src():
-        pass
+    def __download_src(self) -> Str:
+        
+        kvers = KERNEL_VERSION.split(".")
 
-    def __extract_src():
-        pass
+        k_major = kvers[0]
+        k_minor = kvers[1]
+        k_build = kvers[2]
+
+        kurl = KERNEL_SRC_BASE_URL.replace("{major}", k_major).replace("{minor}", k_minor).replace("{build}", k_build)
+        kfn = KERNEL_LOCAL_FILENAME.replace("{major}", k_major).replace("{minor}", k_minor).replace("{build}", k_build)
+        kpath = os.path.join(KERNEL_SRC_DIR, kfn)
+
+        req = requests.get(kurl, stream=True, allow_redirects=True)
+        if req.status_code != 200:
+            req.raise_for_status()
+            raise RuntimeError(f"Request to {kurl} returned status code {r.status_code}")
+        file_size = int(req.headers.get('Content-Length', 0))
+
+        path = pathlib.Path(kpath).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        desc = "(Unknown total file size)" if file_size == 0 else ""
+        req.raw.read = functools.partial(req.raw.read, decode_content=True)  # Decompress if needed
+        with tqdm.wrapattr(req.raw, "read", total=file_size, desc=desc) as r_raw:
+            with path.open("wb") as f:
+                shutil.copyfileobj(r_raw, f)
+
+        return kpath
+        
+
+    def __extract_src(self, tarpath:Str):
+        try:
+            with tarfile.open(tarpath) as tfile:
+                tfile.extractall(KERNEL_SRC_DIR)
+        except (tarfile.TarError, IOError, OSError):
+            logging.error("Error while extracting " + tarpath)
+            pass
 
     def __is_cached(self,version:str) -> bool:
         """Checks if Kernel Source for given kernel is already available"""
@@ -75,11 +114,17 @@ class SourceChecker():
         """Sets up Source Checker, i.e. makes sure the proper kernel source is available"""
         # check if exists
         if not self.__is_cached(self.kernel_version):
+            logging.info("Kernel Source not found in cache, downloading...")
             # download
+            tarxz = self.__download_src()
             # extract
-            # cleanup tmp (targz)
-            pass
-        pass
+            self.__extract_src(tarxz)
+            # cleanup tmp (tarxz)
+            logging.debug("Cleaning up...")
+            try:
+                os.remove(tarxz)
+            except OSError:
+                pass
 
     def compile_switch_for_path(self, filepath:str) -> tuple[str, bool]:
         """
@@ -681,6 +726,9 @@ class CVEManager():
         cve_worksheet = workbook.add_worksheet('CVEs')
         meta_worksheet = workbook.add_worksheet('Metadata')
 
+        # TODO: add formatting
+        # TODO: add second worksheet with metadata
+
         row = 0
         col = 0
         header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
@@ -709,6 +757,11 @@ class CVEManager():
 
         workbook.close()
 
+    def export_csv(self, export_path:str):
+        """Export to a csv File"""
+        
+        logging.info("Exporting results to " + export_path)
+
 
 
 
@@ -729,9 +782,8 @@ def main():
     
     config = configparser.ConfigParser()
     config.read('licc.ini')
-    # TODO: Cmdline options
-    # TODO: cmdline: config path
 
+    
 
     try:
         NIST_NVD_API_KEY = config['NIST']['APIKEY'].strip('"')
@@ -748,7 +800,6 @@ def main():
     setup_directories()
 
     cvem = CVEManager()
-    
     #
     # Step 1: Check if Source is available and download if not
     # Step 2a: Get CVEs
