@@ -3,7 +3,6 @@ from distutils.command.build_scripts import first_line_re
 from genericpath import isfile
 from inspect import currentframe
 import os
-import gzip
 import logging
 import posixpath
 from tabnanny import check
@@ -17,6 +16,7 @@ import configparser
 import re
 #from nvdlib.classes import CVE
 import xlsxwriter
+import csv
 import colorama
 import sys
 import requests
@@ -729,22 +729,40 @@ class CVEManager():
     def export_xlsx(self, export_path:str):
         """Export to a xslx File"""
         
-        logging.info("Exporting results to " + export_path)
+        logging.info("Exporting results as XLSX to " + export_path)
 
         workbook = xlsxwriter.Workbook(export_path)
         cve_worksheet = workbook.add_worksheet('CVEs')
         meta_worksheet = workbook.add_worksheet('Metadata')
 
-        # TODO: add formatting
         # TODO: add second worksheet with metadata
 
+        #
+        # Formatting
+        header_format = workbook.add_format({'bold': True, 'font_color': '#ffffff', 'bg_color': '#303030'})
+        inconclusive_format = workbook.add_format({'bold': True, 'font_color': '#606000', 'bg_color': '#FFFFC0'})
+        na_format = workbook.add_format({'bold': True, 'font_color': '#204f35', 'bg_color': '#4ee895'})
+        applicable_format = workbook.add_format({'bold': True, 'font_color': '#69383a', 'bg_color': '#e84e53'})
+        warning_format = workbook.add_format({'bold': True, 'font_color': '#694f38', 'bg_color': '#e8964e'})
+        header_height = 18 # cell height in pt
+
+
+        #
+        # Data Writing - Header
         row = 0
         col = 0
         header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
-        cve_worksheet.write_row(row, col, header)
+        cve_worksheet.write_row(row, col, header, header_format)
+        cve_worksheet.set_row(row, header_height, header_format)
         row += 1
+        #
+        # Data Writing - CVEs
+        cve_worksheet.set_column(0,0,20) # cve-id
+        cve_worksheet.set_column(4,4,60) # descirption
+        cve_worksheet.set_column(5,5,20) # result
+        cve_worksheet.set_column(5,5,15) # confidence
+        
         for resitem in self.results:
-            header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
             restext = ""
             certtext = ""
             if resitem.result == self.CHECK_CVE_APPLICABLE:
@@ -761,6 +779,18 @@ class CVEManager():
             entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
             entryval = list(entry.values())
             cve_worksheet.write_row(row, col, entryval)
+
+            # apply content dependent formatting
+            # formats cannot be applied to cells afterwards, therefore we overwrite the cell
+            if resitem.result == self.CHECK_CVE_APPLICABLE:
+                cve_worksheet.write(row, 5, entry['result'], applicable_format ) 
+            elif resitem.result == self.CHECK_CVE_NOT_APPLICABLE:
+                cve_worksheet.write(row, 5, entry['result'], na_format ) 
+            elif resitem.result == self.CHECK_INCONCLUSIVE:
+                cve_worksheet.write(row, 5, entry['result'], inconclusive_format ) 
+            if resitem.isUncertain:
+                cve_worksheet.write(row, 6, entry['confidence'], warning_format ) 
+
             row += 1
 
 
@@ -768,8 +798,31 @@ class CVEManager():
 
     def export_csv(self, export_path:str):
         """Export to a csv File"""
-        
-        logging.info("Exporting results to " + export_path)
+
+        header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
+
+        with open(export_path, 'w', newline='') as csvfile:
+            cvewriter = csv.writer(csvfile, delimiter=';',
+                                    quotechar='|', quoting=csv.QUOTE_MINIMAL)
+            
+            cvewriter.writerow(header)
+            for resitem in self.results:
+                if resitem.result == self.CHECK_CVE_APPLICABLE:
+                    restext = "APPLICABLE"
+                elif resitem.result == self.CHECK_CVE_NOT_APPLICABLE:
+                    restext = "NOT APPLICABLE"
+                elif resitem.result == self.CHECK_INCONCLUSIVE:
+                    restext = "INCONCLUSIVE"
+                
+                certtext = "! LOW !" if resitem.isUncertain else "OK"
+                rr = ResultReason()
+                reasontext = rr.getText(resitem.reason)
+
+                entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
+                entryval = list(entry.values())
+                cvewriter.writerow(entryval)
+
+        logging.info("Exporting results as CSV to " + export_path)
 
 
 
@@ -843,7 +896,7 @@ def main():
     parser = argparse.ArgumentParser(description=descr_color,formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('-l','--lconfig', metavar='PATH', type=pathlib.Path, help='licc config to use, defaults to ./licc.ini')
     parser.add_argument('-c','--kconfig', metavar='PATH', type=pathlib.Path, help='kernel config path')
-    parser.add_argument('-o', '--out', metavar='PATH', type=pathlib.Path, help='report path')
+    parser.add_argument('-o', '--out', metavar='PATH', help='report path')
     parser.add_argument('-f', '--outformat', metavar='XLS|CSV', help='report format')
     parser.add_argument('-k', '--ksrc', metavar='PATH', type=pathlib.Path, help='kernel source directory. Overwrites default search path & auto-download, use if you want to work with your (non-vanilla) kernel code')
     parser.add_argument('-t', '--type')
