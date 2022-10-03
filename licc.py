@@ -77,7 +77,14 @@ class SourceChecker():
         req = requests.get(kurl, stream=True, allow_redirects=True)
         if req.status_code != 200:
             req.raise_for_status()
+
+            if req.status_code == 404:
+                logging.error("Error: Download of kernel source code failed, source not found in kernel archive")
+            else:
+                logging.error("Error: Download of kernel source code failed")    
+
             raise RuntimeError(f"Request to {kurl} returned status code {req.status_code}")
+            
         file_size = int(req.headers.get('Content-Length', 0))
 
         path = pathlib.Path(kpath).expanduser().resolve()
@@ -555,6 +562,8 @@ class CVEManager():
         flag = ""
         sourcepath = ""
 
+        arch = self.extractarch(cve.description)
+
         sourcepath = self.extractpath(cve.description)
         if len(sourcepath) == 0:
             # inconlusive
@@ -668,6 +677,12 @@ class CVEManager():
             ret = strmatch[0]
 
         return ret
+
+    def extractarch(self, cvedescr:str) -> str:
+        """Tries to extract the architecture from a cve description"""
+        arch = ""
+        
+        return arch
 
     def __false_positive(self, config) -> bool:
         """Check for false positive. Note: This is a oversimplified check. It only checks for non-linux-kernel cpes and ignores the CPE logic, i.e. does not parse the tree."""
@@ -835,7 +850,7 @@ def setup_directories():
             os.mkdir(KERNEL_SRC_DIR)
     except (OSError, IOError):
         logging.error("Error creating working directories")
-        pass
+        
     
 
 
@@ -898,22 +913,29 @@ def main():
     parser.add_argument('-c','--kconfig', metavar='PATH', type=pathlib.Path, help='kernel config path')
     parser.add_argument('-o', '--out', metavar='PATH', help='report path')
     parser.add_argument('-f', '--outformat', metavar='XLS|CSV', help='report format')
-    parser.add_argument('-k', '--ksrc', metavar='PATH', type=pathlib.Path, help='kernel source directory. Overwrites default search path & auto-download, use if you want to work with your (non-vanilla) kernel code')
-    parser.add_argument('-t', '--type')
+    parser.add_argument('-s', '--src', metavar='PATH', type=pathlib.Path, help='kernel source directory. Overwrites default search path & auto-download, use if you want to work with your (non-vanilla) kernel code')
+    parser.add_argument('-t', '--type') # unused
     parser.add_argument('-v', '--kversion', help='kernel version to check')
+    parser.add_argument('-a', '--arch', help='kernel arch')
+
 
     args = parser.parse_args()
 
     if args.out:
         outfile = args.out
     else:
-        outfile = 'export.xslx'
+        if args.outformat == "xls":
+            outfile = 'export.xslx'
+        elif args.outformat == "csv":
+            outfile = 'export.csv'
+        else:
+            outfile = 'export.csv'
 
 
     if args.outformat:
-        if args.outformat == "xls":
+        if str(args.outformat).lower() == "xls" or str(args.outformat).lower() == "xlsx":
             outfmt = CVEManager.EXPORT_XLSX
-        elif args.outformat == "cvs":
+        elif str(args.outformat).lower() == "csv":
             outfmt = CVEManager.EXPORT_CSV
         else:
             logging.info("Invalid report format specified, defaulting to CSV")
@@ -921,14 +943,25 @@ def main():
     else:
         outfmt = CVEManager.EXPORT_CSV
 
+    if args.lconfig:
+        licc_config = args.licc
+    else:
+        licc_config = 'licc.ini'
     
-    config = configparser.ConfigParser()
-    config.read('licc.ini')
 
-    
+    config = configparser.ConfigParser()
+    config.read(licc_config)
+
+    try: 
+        NIST_NVD_API_KEY = config['NIST']['APIKEY'].strip('"')
+        if NIST_NVD_API_KEY == "":
+            logging.warning("No NIST API Key supplied, NIST Lookup will be slower.")
+    except KeyError as e:
+        logging.error("Error NIST API Key, using defaults.")   
+        NIST_NVD_API_KEY = ""
 
     try:
-        NIST_NVD_API_KEY = config['NIST']['APIKEY'].strip('"')
+        
         KERNEL_SRC_DIR = config['dirs']['KERNEL_SRC_DIR'].strip('"')
         KERNEL_VERSION = config['kernel']['KERNEL_VERSION'].strip('"')
         KERNEL_ARCH = config['kernel']['KERNEL_ARCH'].strip('"')
@@ -938,8 +971,32 @@ def main():
     except KeyError as e:
         print("Error loading config, using defaults.")
         
+    if args.kversion:
+        logging.info("Using cmdline supplied kernel version instead of config")
+        KERNEL_VERSION = args.kversion
+
+    if args.arch:
+        logging.info("Using cmdline supplied kernel arch instead of config")
+        KERNEL_ARCH = args.arch
 
     setup_directories()
+
+    # plausibility check for kverson
+    ar = re.match(r"\d{1,1}\.\d{1,2}\.\d{1,3}", KERNEL_VERSION)
+    if not ar:
+        logging.warning("Warning: Configured Kernel Version seems unplausible: " + KERNEL_VERSION)
+    
+    # plausibility check for arch
+    if not KERNEL_ARCH in ["aarch64", "aarch32", "x86", "x64", "x86_64", "ia64", "alpha", "riscv", "openrisc" "s390", "mips", "powerpc","m68k"]:
+        logging.warning("Warning: Configured Kernel Architecture seems unplausible: " + KERNEL_ARCH)
+
+    # normalize kernel arch
+    if KERNEL_ARCH in ["aarch64", "arm64"]:
+        KERNEL_ARCH = "arm64"
+    elif KERNEL_ARCH in ["aarch32", "arm", "arm32"]:
+        KERNEL_ARCH = "arm"
+    elif KERNEL_ARCH in ["x64", "x86_64", "ia64"]:
+        KERNEL_ARCH = "ia64"
 
     cvem = CVEManager()
     #
