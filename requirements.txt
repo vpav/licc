@@ -1,0 +1,5 @@
+colorama==0.4.4
+nvdlib==0.5.8
+requests==2.25.1
+tqdm==4.64.1
+XlsxWriter==3.0.3
