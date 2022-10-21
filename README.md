@@ -15,6 +15,19 @@ In case you don't supply a custom source, licc will automatically fetch the kern
 
 # basic usage
 
+## 0. setup
+
+You can skip this part if you are familiar with running python scripts.
+
+### Install python 3.9
+
+### Clone repository:
+    git clone https://github.com/vpav/licc
+
+### cd to licc and install required python modules
+    cd licc
+    pip install -r requirements.txt
+
 ## 1. prepare the config-file
 
 Edit the example licc.ini.
