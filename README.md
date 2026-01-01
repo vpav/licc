@@ -19,7 +19,7 @@ In case you don't supply a custom source, licc will automatically fetch the kern
 
 You can skip this part if you are familiar with running python scripts.
 
-### Install python 3.9
+### Install python 3.11 or newer
 
 ### Clone repository:
     git clone https://github.com/vpav/licc
