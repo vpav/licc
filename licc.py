@@ -1,12 +1,9 @@
-from ast import Str
-from distutils.command.build_scripts import first_line_re
 from genericpath import isfile
 from inspect import currentframe
 import os
 import logging
 import posixpath
 from tabnanny import check
-from tkinter.tix import Tree
 from typing import List
 from xmlrpc.client import Boolean
 import colorama
@@ -14,7 +11,6 @@ import pathlib
 import nvdlib
 import configparser
 import re
-#from nvdlib.classes import CVE
 import xlsxwriter
 import csv
 import colorama
@@ -62,7 +58,7 @@ class SourceChecker():
         self.root_path = os.path.join(KERNEL_SRC_DIR, subdir)
         logging.info("Source Checker initialized for Kernel " + kversion)
 
-    def __download_src(self) -> Str:
+    def __download_src(self) -> str:
         
         kvers = KERNEL_VERSION.split(".")
 
@@ -99,7 +95,7 @@ class SourceChecker():
         return kpath
         
 
-    def __extract_src(self, tarpath:Str):
+    def __extract_src(self, tarpath:str):
         try:
             with tarfile.open(tarpath) as tfile:
                 tfile.extractall(KERNEL_SRC_DIR)
@@ -338,13 +334,6 @@ class SourceChecker():
                 logging.debug("Found reference in Makefile")
                 found = True
                 
-                # TODO: add handling for multi-lines:
-                # e.g. 
-                # obj-$(CONFIG_TTY)		+= tty_io.o n_tty.o tty_ioctl.o tty_ldisc.o \
-                #  tty_buffer.o tty_port.o tty_mutex.o \
-                #  tty_ldsem.o tty_baudrate.o tty_jobctrl.o \
-                #  n_null.o
-
                 firstpart = line.split("+=")[0].strip()
                 logging.debug(firstpart)
                 if not firstpart.startswith('obj-'):
@@ -450,13 +439,13 @@ class CVE:
     description = ""
     CVSSv2 = 0.0
     CVSSv3 = 0.0
+    CVSSv31 = 0.0
     CVSSv3severity = ""
     CVSSv3vector = ""
     impact = {}
     id = ""
     config = {}
     assigner = ""
-    problemtype = {}
     references = {}
     publishDate = ""
     lastmodifiedDate = ""
@@ -467,13 +456,13 @@ class CVE:
         self.description = ""
         self.CVSSv2 = 0.0
         self.CVSSv3 = 0.0
+        self.CVSSv31 = 0.0
         self.CVSSv3severity = ""
         self.CVSSv3vector = ""
         self.impact = {}
         self.id = ""
         self.config = {}
         self.assigner = ""
-        self.problemtype = {}
         self.references = {}
         self.publishDate = ""
         self.lastmodifiedDate = ""
@@ -481,27 +470,37 @@ class CVE:
 
         self.id = dcve.id
         self.configs = dcve.configurations
-        self.publishDate = dcve.publishedDate
-        self.lastmodifiedDate = dcve.lastModifiedDate 
+        self.publishDate = dcve.published
+        self.lastmodifiedDate = dcve.lastModified
 
         try:
-            self.CVSSv3 = dcve.v3score
+            self.CVSSv31 = dcve.v31score
         except AttributeError:
-            # old CVEs have only v2 scores
-            self.CVSSv2 = dcve.v2score
+            try:
+                self.CVSSv3 = dcve.v30score
+            except AttributeError:
+                # old CVEs have only v2 scores
+                self.CVSSv2 = dcve.v2score
 
-        self.description = dcve.cve.description.description_data[0].value
+        # take only the english description
+        self.description = "No english description available"
+        for desc in dcve.descriptions:
+            if desc.lang == 'en':
+                self.description = desc.value
+                break
         self.configs = dcve.configurations
         self.cwe = dcve.cwe
-        self.problemtype = dcve.cve.problemtype
         self.url = dcve.url
 
         try:
-            self.CVSSv3vector = dcve.v3vector
+            self.CVSSv3vector = dcve.v31vector
         except AttributeError:
-            pass
+            try:
+                self.CVSSv3vector = dcve.v30vector
+            except AttributeError:
+                pass
 
-        self.references = dcve.cve.references
+        self.references = dcve.references
         
         pass
 
@@ -645,8 +644,8 @@ class CVEManager():
             print("-----------------------------------------------")
             print(cve.id, end='')
             cvelist.append(cve.id)
-            config = cve.configurations.nodes
-
+            config = cve.configurations[0].nodes
+            
             falsepositive = self.__false_positive(config)
 
             if falsepositive:
@@ -681,7 +680,40 @@ class CVEManager():
     def extractarch(self, cvedescr:str) -> str:
         """Tries to extract the architecture from a cve description"""
         arch = ""
+        matched = []
+        cleaned = []
+
+        if "arm64" in cvedescr:
+            arch = "aarch64"
         
+        patterns = [
+            r"(?<=\bon the\s)(\w+)\splatform",
+            r"(?<=\bon\s)(\w+)\splatforms",
+            r"(?<=\bon\s)(\w+)\ssystems",
+            r"(?<=\bon\s)(\w+)[\.,]",
+            r"(?<=\bonly a subset of\s)(\w+)\ssystems are affected",
+            r"(?<=\bwhen run on\s)(\w+)\ssystems",
+            r"(?<=\bfor the\s)(\w+)\ssystems",
+            r"(?<=\brunning on\s)(\w+)",
+            r"(?<=\bfound in\s)(\w+)",
+            r"(?<=\b\s)(\w+)\sarchitecture",
+        ]
+        helperwords = ["system", "systems", "platforms", "platform", "architecture"]
+        for pat in patterns:
+            match = re.findall(pat, cvedescr, re.IGNORECASE)
+            if match:
+                try:
+                    for m in match:
+                        matched.append(m)
+                except TypeError:
+                    matched.append(match)
+        
+        for m in matched:
+            for h in helperwords:
+                m = m.strip(h)
+            cleaned.append(m)
+        
+
         return arch
 
     def __false_positive(self, config) -> bool:
@@ -700,22 +732,20 @@ class CVEManager():
             ### Part 1: Elements with Children
             if "children" in eachNode:
                 self.collectCPE(eachNode)
-                #for eachCpe in eachNode.children:
-                #    print(eachCpe.cpe23Uri)
-                #print("...................................")
+                
             for element in self.cpes:
                 for subelement in element:
                     if subelement.vulnerable:
-                        #print(subelement.cpe23Uri)
-                        if "linux_kernel" in subelement.cpe23Uri:
+                        
+                        if "linux_kernel" in subelement.criteria:
                             falsepositive = False
-                #print("CPE: ", element)
-            #print("...................................")
+                
             ### Part 2: Elements without Children
-            for eachCpe in eachNode.cpe_match:
-                #print(eachCpe.cpe23Uri)
-                #TODO: check for vulnerable==true as in part1
-                pass
+            for eachCpe in eachNode.cpeMatch:
+                
+                if eachCpe.vulnerable:
+                    if "linux_kernel" in eachCpe.criteria:
+                        falsepositive = False
         return falsepositive
         
 
@@ -766,16 +796,16 @@ class CVEManager():
         # Data Writing - Header
         row = 0
         col = 0
-        header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
+        header = ['CVE ID','CVSSv2','CVSSv3','CVSSv31','URL','Description','Result','Confidence','Reason','Flag','Source Path']
         cve_worksheet.write_row(row, col, header, header_format)
         cve_worksheet.set_row(row, header_height, header_format)
         row += 1
         #
         # Data Writing - CVEs
         cve_worksheet.set_column(0,0,20) # cve-id
-        cve_worksheet.set_column(4,4,60) # descirption
-        cve_worksheet.set_column(5,5,20) # result
-        cve_worksheet.set_column(5,5,15) # confidence
+        cve_worksheet.set_column(5,5,60) # descirption
+        cve_worksheet.set_column(6,6,20) # result
+        cve_worksheet.set_column(7,7,15) # confidence
         
         for resitem in self.results:
             restext = ""
@@ -791,7 +821,7 @@ class CVEManager():
             rr = ResultReason()
             reasontext = rr.getText(resitem.reason)
 
-            entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
+            entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'CVSSv31': resitem.cve.CVSSv31, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
             entryval = list(entry.values())
             cve_worksheet.write_row(row, col, entryval)
 
@@ -814,11 +844,11 @@ class CVEManager():
     def export_csv(self, export_path:str):
         """Export to a csv File"""
 
-        header = ['CVE ID','CVSSv2','CVSSv3','URL','Description','Result','Confidence','Reason','Flag','Source Path']
+        header = ['CVE ID','CVSSv2','CVSSv3','CVSSv31', 'URL','Description','Result','Confidence','Reason','Flag','Source Path']
 
-        with open(export_path, 'w', newline='') as csvfile:
+        with open(export_path, 'w', newline='', encoding='utf-8') as csvfile:
             cvewriter = csv.writer(csvfile, delimiter=';',
-                                    quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                                    quotechar='"', quoting=csv.QUOTE_MINIMAL)
             
             cvewriter.writerow(header)
             for resitem in self.results:
@@ -833,7 +863,7 @@ class CVEManager():
                 rr = ResultReason()
                 reasontext = rr.getText(resitem.reason)
 
-                entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
+                entry = {'id': resitem.cve.id , 'CVSSv2': resitem.cve.CVSSv2, 'CVSSv3': resitem.cve.CVSSv3, 'CVSSv31': resitem.cve.CVSSv31, 'URL': resitem.cve.url, 'description': resitem.cve.description, 'result': restext, 'confidence': certtext, 'reason':reasontext, 'flag': resitem.flag, 'path': resitem.path }
                 entryval = list(entry.values())
                 cvewriter.writerow(entryval)
 
@@ -862,51 +892,41 @@ def main():
 
     colorama.init()
 
-    descr_default = """ __         __     ______     ______    
+    descr_lictxt = r"""
+  Copyright 2022-2026 Viktor Pavlovic
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see http://www.gnu.org/licenses/"""
+
+    descr_default = r""" __         __     ______     ______    
 /\ \       /\ \   /\  ___\   /\  ___\   
 \ \ \____  \ \ \  \ \ \____  \ \ \____  
  \ \_____\  \ \_\  \ \_____\  \ \_____\ 
   \/_____/   \/_/   \/_____/   \/_____/
 
   licc - linux cve checker
+""" + descr_lictxt
+    
 
-  Copyright 2022 Viktor Pavlovic
-
- This program is free software: you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation, either version 3 of the License, or
- (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program.  If not, see http://www.gnu.org/licenses/"""
-
-    descr_color = colorama.Fore.LIGHTCYAN_EX + """ __         __     ______     ______    
+    descr_color = colorama.Fore.LIGHTCYAN_EX + r""" __         __     ______     ______    
 /\ \       /\ \   /\  ___\   /\  ___\   
 \ \ \____  \ \ \  \ \ \____  \ \ \____  
  \ \_____\  \ \_\  \ \_____\  \ \_____\ 
   \/_____/   \/_/   \/_____/   \/_____/ 
 
 """ + colorama.Style.RESET_ALL + """  licc - """ + colorama.Fore.LIGHTRED_EX + "li" + colorama.Style.RESET_ALL + "nux " + colorama.Fore.LIGHTRED_EX + "c" + colorama.Style.RESET_ALL + "ve " + colorama.Fore.LIGHTRED_EX + "c" + colorama.Style.RESET_ALL + """hecker
+""" + descr_lictxt
 
-  Copyright 2022 Viktor Pavlovic
-
- This program is free software: you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation, either version 3 of the License, or
- (at your option) any later version.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program.  If not, see http://www.gnu.org/licenses/"""
 
     parser = argparse.ArgumentParser(description=descr_color,formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('-l','--lconfig', metavar='PATH', type=pathlib.Path, help='licc config to use, defaults to ./licc.ini')
@@ -997,6 +1017,7 @@ def main():
         KERNEL_ARCH = "arm"
     elif KERNEL_ARCH in ["x64", "x86_64", "ia64"]:
         KERNEL_ARCH = "ia64"
+
 
     cvem = CVEManager()
     #
