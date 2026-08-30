@@ -422,6 +422,8 @@ class ConfigChecker():
                 return self.CC_SET, ""
             elif flagval == "m":
                 return self.CC_SET_MODULE, ""
+            elif flagval == "NOTSET":
+                return self.CC_NOT_SET, ""
             else:
                 return self.CC_SET_CUSTOM, flagval
         else:
